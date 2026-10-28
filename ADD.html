@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>下单账号比对与每日/按月累加工具</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+  <style>
+    body { font-family: "Microsoft YaHei", Arial, sans-serif; margin: 20px; background: #f7f7f7; color: #222; }
+    h2 { margin-top: 0; }
+    .box { background: #fff; padding: 16px; border-radius: 8px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 10px; }
+    label { font-size: 14px; }
+    select, input[type="file"], input[type="text"], input[type="date"] { padding: 4px; }
+    button { padding: 8px 16px; border: 0; border-radius: 5px; background: #1677ff; color: #fff; cursor: pointer; transition: 0.2s;}
+    button:disabled { background: #aaa; cursor: not-allowed; }
+    button.secondary { background: #00a870; }
+    button.warning { background: #fa8c16; }
+    button.ghost { background: #555; }
+    #stat { font-weight: bold; margin: 10px 0; color: #d4380d;}
+    table { border-collapse: collapse; width: 100%; font-size: 13px; background: #fff; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
+    th { background: #f0f0f0; position: sticky; top: 0; z-index: 10;}
+    tr.miss td { background: #fff1f0; }
+    tr.upd td { background: #e2efda; }
+    .tip { color: #666; font-size: 13px; line-height: 1.6; }
+    .tag-new { display:inline-block; background:#ffe58f; color:#874d00; padding:1px 6px; border-radius:3px; font-size:12px; margin-right:6px;}
+    .tag-upd { display:inline-block; background:#d9f7be; color:#237804; padding:1px 6px; border-radius:3px; font-size:12px; margin-right:6px;}
+    h3 { margin-top: 0; margin-bottom: 8px; }
+    h4 { margin: 16px 0 8px; border-left: 4px solid #1677ff; padding-left: 8px;}
+  </style>
+</head>
+<body>
+  <h2>下单账号比对与按月累加工具</h2>
+
+  <div class="box">
+    <div class="row">
+      <label>A表（历史汇总，含各月金额）：<input type="file" id="fileA" accept=".xlsx,.xls" /></label>
+      <label>B表（今日新增数据）：<input type="file" id="fileB" accept=".xlsx,.xls" /></label>
+      <label>业务日期：<input type="date" id="bizDate" /></label>
+    </div>
+
+    <div class="row">
+      <label>写入月份列：
+        <input type="text" id="monthColInput" list="monthList" value="9月金额" style="width:110px;" />
+        <datalist id="monthList">
+          <option>1月金额</option><option>2月金额</option><option>3月金额</option>
+          <option>4月金额</option><option>5月金额</option><option>6月金额</option>
+          <option>7月金额</option><option>8月金额</option><option>9月金额</option>
+          <option>10月金额</option><option>11月金额</option><option>12月金额</option>
+        </datalist>
+      </label>
+
+      <label>金额来源列：
+        <select id="amountSource">
+          <option selected>商家应收</option>
+          <option>订单金额</option>
+        </select>
+      </label>
+
+      <label>新增行优先级：
+        <select id="priority">
+          <option selected>A3</option><option>A2</option><option>A1</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="row">
+      <label><input type="checkbox" id="mergeSame" checked /> 同账号多行合并金额</label>
+      <label><input type="checkbox" id="fillZero" checked /> 新增行其他月份填0</label>
+      <label><input type="checkbox" id="parseAddr" checked /> 从地址解析省市区</label>
+      <label><input type="checkbox" id="highlightNew" checked /> 汇总表新增行黄色</label>
+      <label><input type="checkbox" id="highlightUpdated" checked /> 汇总表更新行浅绿</label>
+    </div>
+
+    <div class="row">
+      <button onclick="preview()">预览处理结果</button>
+      <button id="exportBtn" class="secondary" onclick="exportResult()" disabled>导出【更新后的A表】</button>
+      <button id="exportDailyBtn" class="warning" onclick="exportDailyReport()" disabled>导出【今日新增明细报表】</button>
+    </div>
+
+    <div id="stat"></div>
+    <div class="tip">
+      · <b>更新A表功能</b>：把B表的数据累加到A表对应的月份里，用于维护总表。<br>
+      · <b>导出日报功能</b>：单独生成一个记录今天新增了哪些账号、老账号今天加了多少金额的Excel。
+    </div>
+  </div>
+
+  <div class="box" id="previewBox" style="display:none;">
+    <h3>处理预览</h3>
+    <div id="previewSummary" style="margin-bottom: 10px; padding: 10px; background: #e6f4ff; border-radius: 4px;"></div>
+
+    <h4>老客累加明细（A表已存在，将累加金额）</h4>
+    <div style="max-height: 260px; overflow: auto;">
+      <table>
+        <thead><tr><th>下单账号</th><th>客户姓名</th><th>原本月金额</th><th>今日增加</th><th>更新后金额</th></tr></thead>
+        <tbody id="updBody"></tbody>
+      </table>
+    </div>
+
+    <h4>全新账号明细（A表不存在，将追加新行）</h4>
+    <div style="max-height: 260px; overflow: auto;">
+      <table>
+        <thead><tr><th>下单账号</th><th>客户姓名</th><th>客户地址</th><th>今日金额</th></tr></thead>
+        <tbody id="newBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+let aHeader = [], aRows = [];
+let bHeader = [], bRows = [];
+let globalRes = null; // 保存最新计算的结果
+
+const monthCols = ["1月金额","2月金额","3月金额","4月金额","5月金额","6月金额","7月金额","8月金额","9月金额","10月金额","11月金额","12月金额"];
+
+// 初始化日期为今天
+document.getElementById("bizDate").valueAsDate = new Date();
+
+function norm(v){ return String(v ?? "").replace(/\s+/g,"").replace(/帐/g,"账"); }
+function normalizeAccount(v){ return String(v ?? "").trim().toLowerCase().replace(/帐/g,"账"); }
+function escapeHtml(v){ return String(v ?? "").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
+
+function findHeaderIndex(header, aliases){
+  const n = header.map(h=>norm(h));
+  for (const a of aliases){ const i = n.indexOf(norm(a)); if (i>=0) return i; }
+  for (let i=0;i<header.length;i++){ if (aliases.some(a=>norm(header[i]).includes(norm(a)))) return i; }
+  return -1;
+}
+function pickFirstNonEmptySheet(wb){
+  for (const name of wb.SheetNames){
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:"" });
+    if (rows.some(r=>r.some(c=>String(c).trim()!==""))) return name;
+  }
+  return wb.SheetNames[0];
+}
+function readWorkbook(file){
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = e => { try { resolve(XLSX.read(e.target.result,{type:"array"})); } catch(err){ reject(err); } };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+function padRow(row, len){
+  const out = new Array(len).fill("");
+  for (let i=0;i<len;i++) out[i] = row[i] ?? "";
+  return out;
+}
+function parseAddress(addr){
+  const s = String(addr||"").replace(/\s+/g,"");
+  const provinces = ["北京","天津","上海","重庆","河北","山西","辽宁","吉林","黑龙江","江苏","浙江","安徽","福建","江西","山东","河南","湖北","湖南","广东","海南","四川","贵州","云南","陕西","甘肃","青海","台湾","内蒙古","广西","西藏","宁夏","新疆","香港","澳门"];
+  let prov = "";
+  for (const p of provinces){
+    if (s.includes(p)){
+      if (["北京","天津","上海","重庆"].includes(p)) prov = p+"市";
+      else if (p==="广西") prov = "广西壮族自治区";
+      else if (p==="内蒙古") prov = "内蒙古自治区";
+      else if (p==="西藏") prov = "西藏自治区";
+      else if (p==="宁夏") prov = "宁夏回族自治区";
+      else if (p==="新疆") prov = "新疆维吾尔自治区";
+      else prov = p+"省";
+      break;
+    }
+  }
+  let rest = prov ? s.replace(prov,"") : s;
+  let city = "", district = "";
+  const cm = rest.match(/([^市]{1,12}市)/);
+  if (cm){ city = cm[1]; rest = rest.replace(city,""); }
+  const dm = rest.match(/([^区县]{1,12}(区|县|旗|市))/);
+  if (dm) district = dm[1];
+  return { prov, city, district };
+}
+
+document.getElementById("fileA").addEventListener("change", async e=>{
+  const f = e.target.files[0]; if (!f) return;
+  const wb = await readWorkbook(f);
+  const sn = pickFirstNonEmptySheet(wb);
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header:1, defval:"" });
+  aHeader = (aoa[0]||[]).map(h=>String(h).trim());
+  aRows = aoa.slice(1).filter(r=>r.some(c=>String(c).trim()!==""));
+  document.getElementById("stat").textContent = "A表已读取：" + sn + "，共 " + aRows.length + " 行";
+  document.getElementById("exportBtn").disabled = true;
+  document.getElementById("exportDailyBtn").disabled = true;
+  document.getElementById("previewBox").style.display = "none";
+});
+
+document.getElementById("fileB").addEventListener("change", async e=>{
+  const f = e.target.files[0]; if (!f) return;
+  const wb = await readWorkbook(f);
+  const sn = pickFirstNonEmptySheet(wb);
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header:1, defval:"" });
+  bHeader = (aoa[0]||[]).map(h=>String(h).trim());
+  bRows = aoa.slice(1).filter(r=>r.some(c=>String(c).trim()!==""));
+  document.getElementById("stat").textContent = "B表已读取：" + sn + "，共 " + bRows.length + " 行";
+  document.getElementById("exportBtn").disabled = true;
+  document.getElementById("exportDailyBtn").disabled = true;
+  document.getElementById("previewBox").style.display = "none";
+});
+
+// 核心：计算处理结果
+function computeResult(){
+  const monthName = document.getElementById("monthColInput").value.trim() || "9月金额";
+  const amountSource = document.getElementById("amountSource").value;
+  const priority = document.getElementById("priority").value;
+  const mergeSame = document.getElementById("mergeSame").checked;
+  const fillZero = document.getElementById("fillZero").checked;
+  const parseAddr = document.getElementById("parseAddr").checked;
+
+  const bAccIdx = findHeaderIndex(bHeader, ["下单账号","下单帐号"]);
+  const bNameIdx = findHeaderIndex(bHeader, ["客户姓名"]);
+  const bAddrIdx = findHeaderIndex(bHeader, ["客户地址","地址"]);
+  const bAmtIdx = findHeaderIndex(bHeader, [amountSource]);
+
+  if (bAccIdx<0) throw new Error("B表没有下单账号列");
+  if (bAmtIdx<0) throw new Error("B表没有金额列：" + amountSource);
+
+  let monthIdxInA = aHeader.findIndex(h=>norm(h)===norm(monthName));
+  let monthIsNew = false;
+  let finalHeader = [...aHeader];
+
+  if (monthIdxInA < 0){
+    monthIsNew = true;
+    let insertAt = aHeader.length;
+    for (let i=aHeader.length-1;i>=0;i--){
+      if (String(aHeader[i]).includes("月金额")){ insertAt = i+1; break; }
+    }
+    finalHeader.splice(insertAt, 0, monthName);
+    monthIdxInA = insertAt;
+  }
+
+  const accIdxF = findHeaderIndex(finalHeader, ["下单账号","下单帐号"]);
+  const nameIdxF = findHeaderIndex(finalHeader, ["客户姓名"]);
+  const priIdxF = findHeaderIndex(finalHeader, ["优先级"]);
+  const provIdxF = findHeaderIndex(finalHeader, ["省份"]);
+  const cityIdxF = findHeaderIndex(finalHeader, ["地级市"]);
+  const distIdxF = findHeaderIndex(finalHeader, ["区县"]);
+
+  const oldRowsOut = aRows.map(r=>{
+    const base = padRow(r, aHeader.length);
+    if (monthIsNew) base.splice(monthIdxInA, 0, "");
+    return base;
+  });
+
+  const rowIdxMap = new Map();
+  oldRowsOut.forEach((row,i)=>{
+    const acc = normalizeAccount(row[accIdxF]);
+    if (acc && norm(row[accIdxF])!=="合计" && !rowIdxMap.has(acc)) rowIdxMap.set(acc, i);
+  });
+
+  const updates = new Map();
+  const newItems = [];
+  const newIndexByAcc = new Map();
+
+  bRows.forEach(r=>{
+    const acc = normalizeAccount(r[bAccIdx]);
+    if (!acc) return;
+    const amount = Number(r[bAmtIdx]) || 0;
+
+    if (rowIdxMap.has(acc)){
+      updates.set(acc, (updates.get(acc)||0) + amount);
+    } else {
+      if (mergeSame){
+        if (newIndexByAcc.has(acc)){
+          newItems[newIndexByAcc.get(acc)].amount += amount;
+        } else {
+          newIndexByAcc.set(acc, newItems.length);
+          newItems.push({ account:r[bAccIdx], name:r[bNameIdx], addr:r[bAddrIdx], amount });
+        }
+      } else {
+        newItems.push({ account:r[bAccIdx], name:r[bNameIdx], addr:r[bAddrIdx], amount });
+      }
+    }
+  });
+
+  const updatedRowIdxSet = new Set();
+  const updateDetails = [];
+  updates.forEach((amount, acc)=>{
+    const i = rowIdxMap.get(acc);
+    const row = oldRowsOut[i];
+    const before = Number(row[monthIdxInA]) || 0;
+    row[monthIdxInA] = before + amount;
+    updatedRowIdxSet.add(i);
+    updateDetails.push({
+      account: row[accIdxF],
+      name: row[nameIdxF],
+      before, amount, after: before + amount
+    });
+  });
+
+  const newRowsOut = newItems.map(item=>{
+    const row = new Array(finalHeader.length).fill("");
+    if (fillZero) monthCols.forEach(m=>{
+      const idx = finalHeader.findIndex(h=>norm(h)===norm(m));
+      if (idx>=0) row[idx] = 0;
+    });
+    if (accIdxF>=0) row[accIdxF] = item.account;
+    if (nameIdxF>=0) row[nameIdxF] = item.name;
+    if (priIdxF>=0) row[priIdxF] = priority;
+    if (parseAddr){
+      const p = parseAddress(item.addr);
+      if (provIdxF>=0) row[provIdxF] = p.prov;
+      if (cityIdxF>=0) row[cityIdxF] = p.city;
+      if (distIdxF>=0) row[distIdxF] = p.district;
+    }
+    row[monthIdxInA] = item.amount;
+    return row;
+  });
+
+  return {
+    monthName, monthIsNew, monthIdxInA, finalHeader,
+    oldRowsOut, newRowsOut, updatedRowIdxSet, updateDetails,
+    newItems, aHeader, aRows, bHeader, bRows,
+    accIdxF, nameIdxF, priIdxF, provIdxF, cityIdxF, distIdxF, monthCols
+  };
+}
+
+function preview(){
+  if (!aHeader.length || !bHeader.length){ alert("请先上传 A表和B表"); return; }
+  let res;
+  try { res = computeResult(); } catch(e){ alert(e.message); return; }
+  globalRes = res;
+
+  document.getElementById("previewBox").style.display = "";
+  document.getElementById("previewSummary").innerHTML =
+    `<span class="tag-upd">老客累加：${res.updatedRowIdxSet.size} 个账号</span>
+     <span class="tag-new">全新账号：${res.newRowsOut.length} 个</span>
+     写入列：<b>${escapeHtml(res.monthName)}</b>
+     ${res.monthIsNew ? "（A表中不存在此列，导出时将自动插入）" : ""}`;
+
+  document.getElementById("updBody").innerHTML = res.updateDetails.map(d=>
+    `<tr class="upd">
+       <td>${escapeHtml(d.account)}</td>
+       <td>${escapeHtml(d.name)}</td>
+       <td>${d.before}</td>
+       <td style="color:green;font-weight:bold;">+${d.amount}</td>
+       <td><b>${d.after}</b></td>
+     </tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#999;">无</td></tr>`;
+
+  document.getElementById("newBody").innerHTML = res.newItems.map(d=>
+    `<tr class="miss">
+       <td>${escapeHtml(d.account)}</td>
+       <td>${escapeHtml(d.name)}</td>
+       <td>${escapeHtml(d.addr)}</td>
+       <td style="color:red;font-weight:bold;">${d.amount}</td>
+     </tr>`).join("") || `<tr><td colspan="4" style="text-align:center;color:#999;">无</td></tr>`;
+
+  document.getElementById("exportBtn").disabled = false;
+  document.getElementById("exportDailyBtn").disabled = false;
+}
+
+// 导出更新后的 A 表
+function exportResult(){
+  if (!globalRes){ alert("请先点击预览处理结果"); return; }
+  const res = globalRes;
+
+  const highlightNew = document.getElementById("highlightNew").checked;
+  const highlightUpdated = document.getElementById("highlightUpdated").checked;
+
+  const outAoa = [res.finalHeader, ...res.oldRowsOut, ...res.newRowsOut];
+  const wb = XLSX.utils.book_new();
+  const ws1 = XLSX.utils.aoa_to_sheet(outAoa);
+  const totalCols = res.finalHeader.length;
+
+  if (highlightNew && res.newRowsOut.length > 0){
+    const firstNew = 1 + res.oldRowsOut.length;
+    const lastNew = firstNew + res.newRowsOut.length - 1;
+    for (let R=firstNew; R<=lastNew; R++){
+      for (let C=0; C<totalCols; C++){
+        const addr = XLSX.utils.encode_cell({r:R,c:C});
+        if (!ws1[addr]) ws1[addr] = { t:"s", v:"" };
+        ws1[addr].s = { fill: { fgColor: { rgb: "FFF2CC" } }, font: { color: { rgb: "9C6500" }, bold: true } };
+      }
+    }
+  }
+
+  if (highlightUpdated && res.updatedRowIdxSet.size > 0){
+    res.updatedRowIdxSet.forEach(idx=>{
+      const R = idx + 1;
+      for (let C=0; C<totalCols; C++){
+        const addr = XLSX.utils.encode_cell({r:R,c:C});
+        if (!ws1[addr]) ws1[addr] = { t:"s", v:"" };
+        ws1[addr].s = { fill: { fgColor: { rgb: "E2EFDA" } }, font: { color: { rgb: "375623" } } };
+      }
+    });
+  }
+
+  for (let C=0; C<totalCols; C++){
+    const addr = XLSX.utils.encode_cell({r:0,c:C});
+    if (ws1[addr]){
+      ws1[addr].s = { fill: { fgColor: { rgb: "D9E1F2" } }, font: { bold: true } };
+    }
+  }
+
+  XLSX.utils.book_append_sheet(wb, ws1, "更新后汇总");
+  XLSX.writeFile(wb, "汇总-新_已按月更新.xlsx");
+}
+
+// 导出今日新增明细报表
+function exportDailyReport(){
+  if (!globalRes){ alert("请先点击预览处理结果"); return; }
+  const res = globalRes;
+  const dateStr = document.getElementById("bizDate").value || "未填日期";
+  
+  if (res.updateDetails.length === 0 && res.newItems.length === 0) {
+    alert("今天没有任何新增或累加的数据！"); return;
+  }
+
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: 老客累加明细
+  const updHeader = ["业务日期", "下单账号", "客户姓名", "写入月份", "原金额", "今日新增金额", "累计后金额"];
+  const updAoa = [updHeader];
+  res.updateDetails.forEach(d => {
+    updAoa.push([dateStr, d.account, d.name, res.monthName, d.before, d.amount, d.after]);
+  });
+  const wsUpd = XLSX.utils.aoa_to_sheet(updAoa);
+  // 简单设置一下列宽
+  wsUpd['!cols'] = [{wch:12},{wch:20},{wch:15},{wch:12},{wch:10},{wch:15},{wch:12}];
+  XLSX.utils.book_append_sheet(wb, wsUpd, "今日老客累加");
+
+  // Sheet 2: 全新账号明细
+  const newHeader = ["业务日期", "下单账号", "客户姓名", "客户地址", "首次下单金额", "写入月份"];
+  const newAoa = [newHeader];
+  res.newItems.forEach(d => {
+    newAoa.push([dateStr, d.account, d.name, d.addr, d.amount, res.monthName]);
+  });
+  const wsNew = XLSX.utils.aoa_to_sheet(newAoa);
+  wsNew['!cols'] = [{wch:12},{wch:20},{wch:15},{wch:45},{wch:15},{wch:12}];
+  XLSX.utils.book_append_sheet(wb, wsNew, "今日全新账号");
+
+  // 表头加粗居左
+  ["今日老客累加", "今日全新账号"].forEach(sheetName => {
+    const ws = wb.Sheets[sheetName];
+    for (let C=0; C<ws['!ref'].split(':')[1].charCodeAt(0)-65+1; C++){
+      const addr = XLSX.utils.encode_cell({r:0,c:C});
+      if (ws[addr]){
+        ws[addr].s = { fill: { fgColor: { rgb: "D9E1F2" } }, font: { bold: true } };
+      }
+    }
+  });
+
+  XLSX.writeFile(wb, `每日新增明细_${dateStr}.xlsx`);
+}
+</script>
+</body>
+</html>
